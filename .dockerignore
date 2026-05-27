@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.sqlite3
+*.db
+agent_traces.jsonl
+prompt_registry.json
+secrets_vault.enc
+vault.key
+devops_secrets.json
+.git/

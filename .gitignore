@@ -1,0 +1,11 @@
+.env
+*.pyc
+__pycache__/
+venv/
+*.sqlite3
+*.db
+agent_traces.jsonl
+prompt_registry.json
+secrets_vault.enc
+vault.key
+devops_secrets.json
