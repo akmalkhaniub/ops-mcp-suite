@@ -118,6 +118,32 @@ async def health():
     return {"status": "ok"}
 
 
+# Tools that mutate live infrastructure or secrets require elevated permission when X-Execution-Mode=READ_ONLY
+MUTATING_TOOLS = {
+    "provision_s3_bucket",
+    "create_iam_policy",
+    "deploy_docker_container",
+    "manage_secrets",
+    "promote_model",
+    "provision_vector_db",
+    "store_secret",
+    "rotate_keys",
+    "create_issue",
+}
+
+
+def _extract_mcp_tools(mcp_instance) -> dict:
+    """Safely extract registered tools from a FastMCP instance without brittle reliance on a single internal layout."""
+    if mcp_instance is None:
+        return {}
+    tool_mgr = getattr(mcp_instance, "_tool_manager", None)
+    if tool_mgr and hasattr(tool_mgr, "_tools"):
+        return dict(tool_mgr._tools)
+    if hasattr(mcp_instance, "tools") and isinstance(mcp_instance.tools, dict):
+        return dict(mcp_instance.tools)
+    return {}
+
+
 @app.get("/servers")
 async def list_servers():
     """Returns metadata about all available MCP servers and their tools."""
@@ -128,8 +154,7 @@ async def list_servers():
         try:
             mod = __import__(info["module"])
             mcp_instance = getattr(mod, "mcp", None)
-            if mcp_instance and hasattr(mcp_instance, "_tool_manager"):
-                tool_names = list(mcp_instance._tool_manager._tools.keys())
+            tool_names = list(_extract_mcp_tools(mcp_instance).keys())
         except Exception as e:
             logger.warning("Could not inspect tools for %s: %s", key, e)
 
@@ -158,12 +183,14 @@ async def list_tools(server_id: str):
     try:
         mod = __import__(info["module"])
         mcp_instance = getattr(mod, "mcp", None)
-        if mcp_instance and hasattr(mcp_instance, "_tool_manager"):
+        registered = _extract_mcp_tools(mcp_instance)
+        if registered:
             tools = []
-            for name, tool in mcp_instance._tool_manager._tools.items():
+            for name, tool in registered.items():
                 tools.append({
                     "name": name,
-                    "description": getattr(tool, "description", str(tool.fn.__doc__ or "")),
+                    "description": getattr(tool, "description", str(getattr(tool, "fn", None).__doc__ or "")),
+                    "execution_tier": "LIVE_MUTATION" if name in MUTATING_TOOLS else "READ_ONLY",
                 })
             return {"server": info["name"], "tools": tools}
     except Exception as e:
@@ -175,9 +202,25 @@ async def list_tools(server_id: str):
 
 @app.post("/{server_id}/call/{tool_name}")
 async def call_tool(server_id: str, tool_name: str, request: Request):
-    """Call a specific tool on a specific MCP server with JSON arguments."""
+    """Call a specific tool on a specific MCP server with JSON arguments and execution-mode policy gating."""
     if server_id not in MCP_SERVERS:
         return JSONResponse(status_code=404, content={"error": f"Server '{server_id}' not found"})
+
+    # Enforce optional API key & READ_ONLY execution harness guard
+    configured_key = os.environ.get("OPS_GATEWAY_API_KEY")
+    if configured_key:
+        provided_key = request.headers.get("X-Ops-Api-Key") or request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if provided_key != configured_key:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized: invalid or missing X-Ops-Api-Key"})
+
+    exec_mode = request.headers.get("X-Execution-Mode", "FULL").upper()
+    if exec_mode == "READ_ONLY" and tool_name in MUTATING_TOOLS:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": f"PolicyGate violation: mutating tool '{tool_name}' is blocked under X-Execution-Mode=READ_ONLY"
+            },
+        )
 
     info = MCP_SERVERS[server_id]
     try:
@@ -188,8 +231,9 @@ async def call_tool(server_id: str, tool_name: str, request: Request):
     try:
         mod = __import__(info["module"])
         mcp_instance = getattr(mod, "mcp", None)
-        if mcp_instance and hasattr(mcp_instance, "_tool_manager"):
-            tool = mcp_instance._tool_manager._tools.get(tool_name)
+        registered = _extract_mcp_tools(mcp_instance)
+        if registered:
+            tool = registered.get(tool_name)
             if not tool:
                 return JSONResponse(
                     status_code=404,
@@ -201,6 +245,9 @@ async def call_tool(server_id: str, tool_name: str, request: Request):
             else:
                 result = tool.fn(**body)
             return {"server": server_id, "tool": tool_name, "result": result}
+    except TypeError as e:
+        logger.warning("Invalid arguments for %s/%s: %s", server_id, tool_name, e)
+        return JSONResponse(status_code=422, content={"error": f"Invalid tool arguments: {e}"})
     except Exception as e:
         logger.error("Error calling %s/%s: %s", server_id, tool_name, e)
         return JSONResponse(status_code=500, content={"error": str(e)})

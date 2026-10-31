@@ -1,0 +1,37 @@
+[
+  {
+    "id": "OPS-001",
+    "status": "TODO",
+    "priority": 1,
+    "title": "Add In-Memory Rate Limiting to FastAPI Gateway",
+    "description": "Implement an IP and API-key aware token bucket rate limiter middleware in gateway.py. Return HTTP 429 when an agent exceeds 120 requests/minute. Add unit tests in tests/test_rate_limiting.py verifying the 429 status code and Retry-After header.",
+    "acceptance_criteria": [
+      "Gateway limits requests to 120 req/min per API key/IP",
+      "Returns HTTP 429 with JSON error body and Retry-After header",
+      "python -m pytest tests/ exits with 0"
+    ]
+  },
+  {
+    "id": "OPS-002",
+    "status": "TODO",
+    "priority": 2,
+    "title": "Implement MCP JSON-RPC Capability Negotiation in Servers",
+    "description": "Ensure each of the 6 MCP servers correctly reports server capabilities ('prompts', 'resources', 'tools', 'logging') upon initialize handshake adhering to MCP 2025/2026 specs.",
+    "acceptance_criteria": [
+      "Initialize request returns standard MCP capability matrix",
+      "python -m pytest tests/ exits with 0"
+    ]
+  },
+  {
+    "id": "OPS-003",
+    "status": "TODO",
+    "priority": 3,
+    "title": "Add Secret Expiration and Rotation Tool in secrets_mcp.py",
+    "description": "Add a new tool `rotate_secret(key_name, new_value, ttl_days=30)` that re-encrypts values with a fresh timestamp and marks old keys with an expiration header.",
+    "acceptance_criteria": [
+      "Tool rotate_secret encrypts and updates vault correctly",
+      "Unit test verifies expiration metadata and decryption",
+      "python -m pytest tests/ exits with 0"
+    ]
+  }
+]

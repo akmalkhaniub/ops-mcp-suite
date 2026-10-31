@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "ops-suite-gateway": {
+      "command": "python",
+      "args": ["g:/ReplitProjects/ops-mcp-suite/gateway.py"]
+    },
+    "ops-devops": {
+      "command": "python",
+      "args": ["g:/ReplitProjects/ops-mcp-suite/devops_mcp.py"]
+    },
+    "ops-dbops": {
+      "command": "python",
+      "args": ["g:/ReplitProjects/ops-mcp-suite/dbops_mcp.py"]
+    },
+    "ops-secrets": {
+      "command": "python",
+      "args": ["g:/ReplitProjects/ops-mcp-suite/secrets_mcp.py"]
+    }
+  }
+}
