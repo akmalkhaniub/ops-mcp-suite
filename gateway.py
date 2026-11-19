@@ -13,6 +13,7 @@ This allows a single Cloud Run service to host the entire Ops platform.
 """
 
 import logging
+import secrets
 import subprocess
 import sys
 import os
@@ -86,12 +87,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "OPS_CORS_ALLOWED_ORIGINS",
+        "http://127.0.0.1:8080,http://localhost:8080,http://localhost:6274",
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Ops-Api-Key", "X-Execution-Mode", "Mcp-Session-Id"],
+    expose_headers=["WWW-Authenticate", "Mcp-Session-Id"],
 )
 
 
@@ -127,8 +138,12 @@ MUTATING_TOOLS = {
     "promote_model",
     "provision_vector_db",
     "store_secret",
+    "delete_secret",
+    "rotate_secret",
     "rotate_keys",
     "create_issue",
+    "apply_migrations",
+    "clone_database",
 }
 
 
@@ -209,9 +224,15 @@ async def call_tool(server_id: str, tool_name: str, request: Request):
     # Enforce optional API key & READ_ONLY execution harness guard
     configured_key = os.environ.get("OPS_GATEWAY_API_KEY")
     if configured_key:
-        provided_key = request.headers.get("X-Ops-Api-Key") or request.headers.get("Authorization", "").removeprefix("Bearer ")
-        if provided_key != configured_key:
-            return JSONResponse(status_code=401, content={"error": "Unauthorized: invalid or missing X-Ops-Api-Key"})
+        auth_header = request.headers.get("Authorization", "")
+        bearer_val = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        provided_key = request.headers.get("X-Ops-Api-Key") or bearer_val
+        if not provided_key or not secrets.compare_digest(provided_key, configured_key):
+            return JSONResponse(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Bearer realm="ops-mcp-gateway"'},
+                content={"error": "Unauthorized: invalid or missing X-Ops-Api-Key"},
+            )
 
     exec_mode = request.headers.get("X-Execution-Mode", "FULL").upper()
     if exec_mode == "READ_ONLY" and tool_name in MUTATING_TOOLS:

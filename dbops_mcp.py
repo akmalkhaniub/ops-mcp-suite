@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import uuid
@@ -44,12 +45,18 @@ mcp = FastMCP("DBOps Tools")
 
 
 def _resolve_db_path(db_path: str) -> Path:
-    """Resolve and validate a database file path.
+    """Resolve and validate a database file path, enforcing optional OPS_DB_WORKSPACE_ROOT confinement.
 
     Raises:
+        ValueError: If path escapes configured OPS_DB_WORKSPACE_ROOT.
         FileNotFoundError: If the file does not exist.
     """
     p = Path(db_path).resolve()
+    workspace_root = os.environ.get("OPS_DB_WORKSPACE_ROOT")
+    if workspace_root:
+        root_resolved = Path(workspace_root).resolve()
+        if not p.is_relative_to(root_resolved):
+            raise ValueError(f"Path traversal blocked: '{db_path}' escapes OPS_DB_WORKSPACE_ROOT.")
     if not p.exists():
         raise FileNotFoundError(f"Database file not found: {p}")
     return p
@@ -62,17 +69,23 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
 
 
 def _is_read_only_query(query: str) -> bool:
-    """Return True if the SQL query is a safe read-only SELECT statement."""
-    normalized = query.strip().upper()
-    # Reject anything that is not a SELECT (or WITH … SELECT)
+    """Return True if the SQL query is a single safe read-only SELECT statement."""
+    trimmed = query.strip()
+    if not trimmed:
+        return False
+    without_strings = re.sub(r"'(?:''|[^'])*'", "''", trimmed)
+    if ";" in re.sub(r";+\s*$", "", without_strings):
+        return False
+    normalized = without_strings.upper()
     if not (normalized.startswith("SELECT") or normalized.startswith("WITH")):
         return False
-    # Reject dangerous keywords anywhere in the query
-    forbidden = {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-                 "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA"}
-    tokens = set(normalized.split())
-    if tokens & forbidden:
-        return False
+    forbidden = (
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+        "REPLACE", "TRUNCATE", "ATTACH", "DETACH", "PRAGMA", "VACUUM",
+    )
+    for kw in forbidden:
+        if re.search(rf"\b{kw}\b", normalized):
+            return False
     return True
 
 

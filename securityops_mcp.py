@@ -1,10 +1,27 @@
 """
 SecurityOps MCP Server Module - Operational Security & Compliance Analysis
 """
+import datetime
+import ipaddress
 import ssl
 import socket
-import datetime
 from typing import Dict, Any, List
+
+
+def _validate_public_hostname(hostname: str) -> None:
+    """Block SSRF against loopback, private RFC1918, and cloud metadata IPs/hostnames."""
+    host = hostname.strip().lower().rstrip(".")
+    if not host or host in {"localhost", "ip6-localhost", "metadata.google.internal", "metadata.azure.com"} or host.endswith(".localhost"):
+        raise ValueError(f"SSRF blocked: '{hostname}' is a restricted internal host.")
+    try:
+        ip = ipaddress.ip_address(host)
+        target = getattr(ip, "ipv4_mapped", None) or ip
+        if target.is_private or target.is_loopback or target.is_link_local or target.is_reserved or target.is_multicast or target.is_unspecified:
+            raise ValueError(f"SSRF blocked: non-public IP '{hostname}' is forbidden.")
+    except ValueError as exc:
+        if "SSRF blocked" in str(exc):
+            raise
+
 
 class SecurityOpsMCP:
     """Security operations MCP tool definitions."""
@@ -13,14 +30,15 @@ class SecurityOpsMCP:
     def check_tls_certificate(hostname: str, port: int = 443) -> Dict[str, Any]:
         """Validate SSL/TLS certificate expiration days and issuer info for a domain."""
         try:
+            _validate_public_hostname(hostname)
             context = ssl.create_default_context()
             with socket.create_connection((hostname, port), timeout=5) as sock:
                 with context.wrap_socket(sock, server_hostname=hostname) as ssock:
                     cert = ssock.getpeercert()
                     
                     not_after_str = cert['notAfter']
-                    not_after_dt = datetime.datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z")
-                    days_remaining = (not_after_dt - datetime.datetime.utcnow()).days
+                    not_after_dt = datetime.datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=datetime.timezone.utc)
+                    days_remaining = (not_after_dt - datetime.datetime.now(datetime.timezone.utc)).days
 
                     issuer = dict(x[0] for x in cert.get('issuer', []))
                     
