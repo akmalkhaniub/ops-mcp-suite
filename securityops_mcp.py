@@ -3,24 +3,81 @@ SecurityOps MCP Server Module - Operational Security & Compliance Analysis
 """
 import datetime
 import ipaddress
+import re
 import ssl
 import socket
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
+
+
+def _check_ip_public(raw_ip: str, original_host: str) -> None:
+    """Raise ValueError if an IP address is private, loopback, link-local, reserved, multicast, or unspecified."""
+    ip = ipaddress.ip_address(raw_ip.split("%", 1)[0])
+    target = getattr(ip, "ipv4_mapped", None) or ip
+    if (
+        target.is_private
+        or target.is_loopback
+        or target.is_link_local
+        or target.is_reserved
+        or target.is_multicast
+        or target.is_unspecified
+    ):
+        raise ValueError(f"SSRF blocked: non-public IP '{original_host}' ({raw_ip}) is forbidden.")
 
 
 def _validate_public_hostname(hostname: str) -> None:
     """Block SSRF against loopback, private RFC1918, and cloud metadata IPs/hostnames."""
     host = hostname.strip().lower().rstrip(".")
-    if not host or host in {"localhost", "ip6-localhost", "metadata.google.internal", "metadata.azure.com"} or host.endswith(".localhost"):
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if (
+        not host
+        or host in {"localhost", "ip6-localhost", "metadata.google.internal", "metadata.azure.com"}
+        or host.endswith(".localhost")
+    ):
         raise ValueError(f"SSRF blocked: '{hostname}' is a restricted internal host.")
     try:
-        ip = ipaddress.ip_address(host)
-        target = getattr(ip, "ipv4_mapped", None) or ip
-        if target.is_private or target.is_loopback or target.is_link_local or target.is_reserved or target.is_multicast or target.is_unspecified:
-            raise ValueError(f"SSRF blocked: non-public IP '{hostname}' is forbidden.")
+        _check_ip_public(host, hostname)
+        return
     except ValueError as exc:
         if "SSRF blocked" in str(exc):
             raise
+
+    try:
+        addr_info = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_info:
+        if sockaddr and sockaddr[0]:
+            _check_ip_public(sockaddr[0], hostname)
+
+
+def _parse_version_tuple(version_str: str) -> Tuple[int, ...] | None:
+    """Extract numeric version tuple for comparison (e.g., '2.31.0' -> (2, 31, 0))."""
+    match = re.match(r"^\s*v?(\d+(?:\.\d+)*)", version_str)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _is_version_vulnerable(spec: str, max_safe_exclusive: str) -> bool:
+    """Return True when dependency spec is unpinned or specifies a version below max_safe_exclusive."""
+    threshold = _parse_version_tuple(max_safe_exclusive)
+    if threshold is None:
+        return True
+    match = re.search(r"(===|==|~=|>=|<=|!=|>|<)\s*([^\s,;]+)", spec)
+    if not match:
+        return True
+    op, ver_str = match.group(1), match.group(2)
+    ver = _parse_version_tuple(ver_str)
+    if ver is None:
+        return True
+    max_len = max(len(ver), len(threshold))
+    ver_padded = ver + (0,) * (max_len - len(ver))
+    thr_padded = threshold + (0,) * (max_len - len(threshold))
+    if op in (">=", ">"):
+        return ver_padded < thr_padded
+    return ver_padded < thr_padded
 
 
 class SecurityOpsMCP:
@@ -69,15 +126,17 @@ class SecurityOpsMCP:
         }
 
         for dep in dependencies:
-            dep_name = dep.split("==")[0].split(">=")[0].split("<")[0].strip().lower()
+            dep_name = re.split(r"[=<>~!;\[]", dep, maxsplit=1)[0].strip().lower()
             if dep_name in known_issues:
                 vuln_rule, advisory = known_issues[dep_name]
-                vulnerabilities.append({
-                    "package": dep,
-                    "rule": vuln_rule,
-                    "advisory": advisory,
-                    "severity": "HIGH"
-                })
+                min_safe = vuln_rule.lstrip("<=")
+                if _is_version_vulnerable(dep, min_safe):
+                    vulnerabilities.append({
+                        "package": dep,
+                        "rule": vuln_rule,
+                        "advisory": advisory,
+                        "severity": "HIGH"
+                    })
 
         return {
             "total_scanned": len(dependencies),

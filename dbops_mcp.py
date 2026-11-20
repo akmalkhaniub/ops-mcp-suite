@@ -62,15 +62,35 @@ def _resolve_db_path(db_path: str) -> Path:
     return p
 
 
+def _resolve_workspace_target(name: str, base_dir: Path | None = None, ext: str = ".sqlite3") -> Path:
+    """Resolve a new SQLite file target safely inside base_dir / OPS_DB_WORKSPACE_ROOT."""
+    cleaned = name.strip()
+    if not cleaned or any(sep in cleaned for sep in ("/", "\\", "\x00")) or ".." in cleaned:
+        raise ValueError(f"Path traversal blocked: invalid database name '{name}'.")
+    workspace_root = os.environ.get("OPS_DB_WORKSPACE_ROOT")
+    root = Path(workspace_root).resolve() if workspace_root else (base_dir.resolve() if base_dir else Path.cwd().resolve())
+    filename = cleaned if cleaned.endswith(ext) else f"{cleaned}{ext}"
+    target = (root / filename).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError(f"Path traversal blocked: '{name}' escapes target directory.")
+    return target
+
+
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     """Open a SQLite connection in read-only mode via URI."""
     uri = f"file:{db_path}?mode=ro"
     return sqlite3.connect(uri, uri=True)
 
 
+def _strip_sql_comments(query: str) -> str:
+    """Strip SQL line and block comments outside single-quoted string literals."""
+    pattern = re.compile(r"('(?:''|[^'])*')|(--[^\r\n]*)|(/\*[\s\S]*?\*/)")
+    return pattern.sub(lambda m: m.group(1) if m.group(1) else " ", query)
+
+
 def _is_read_only_query(query: str) -> bool:
     """Return True if the SQL query is a single safe read-only SELECT statement."""
-    trimmed = query.strip()
+    trimmed = _strip_sql_comments(query).strip()
     if not trimmed:
         return False
     without_strings = re.sub(r"'(?:''|[^'])*'", "''", trimmed)
@@ -132,7 +152,10 @@ def provision_database(db_name: str, engine: str = "sqlite") -> str:
     if engine != "sqlite":
         return f"Error: unsupported engine '{engine}'. Supported: sqlite, postgres."
 
-    db_path = Path(f"{db_name}.sqlite3").resolve()
+    try:
+        db_path = _resolve_workspace_target(db_name)
+    except ValueError as exc:
+        return f"Error: {exc}"
     try:
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
@@ -227,8 +250,8 @@ def run_query(db_path: str, query: str) -> str:
 
     try:
         path = _resolve_db_path(db_path)
-    except FileNotFoundError as exc:
-        return str(exc)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}" if isinstance(exc, ValueError) else str(exc)
 
     try:
         conn = _connect_readonly(path)
@@ -275,8 +298,8 @@ def list_tables(db_path: str) -> str:
     """
     try:
         path = _resolve_db_path(db_path)
-    except FileNotFoundError as exc:
-        return str(exc)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}" if isinstance(exc, ValueError) else str(exc)
 
     try:
         conn = _connect_readonly(path)
@@ -294,7 +317,8 @@ def list_tables(db_path: str) -> str:
 
         lines = [f"=== Tables in {path.name} ===", ""]
         for table in tables:
-            cursor.execute(f"PRAGMA table_info([{table}])")  # noqa: S608
+            safe_table = table.replace("]", "]]")
+            cursor.execute(f"PRAGMA table_info([{safe_table}])")  # noqa: S608
             cols = cursor.fetchall()
             lines.append(f"  {table}")
             for col in cols:
@@ -337,11 +361,11 @@ def clone_database(source_db: str, target_name: str) -> str:
 
     try:
         source_path = _resolve_db_path(source_db)
+        target_path = _resolve_workspace_target(target_name, base_dir=source_path.parent)
     except FileNotFoundError as exc:
         return str(exc)
-
-    target_name = target_name.strip()
-    target_path = source_path.parent / f"{target_name}.sqlite3"
+    except ValueError as exc:
+        return f"Error: {exc}"
 
     if target_path.exists():
         return f"Error: target file already exists at {target_path}. Choose a different name."
@@ -415,8 +439,8 @@ def get_db_stats(db_path: str) -> str:
     """
     try:
         path = _resolve_db_path(db_path)
-    except FileNotFoundError as exc:
-        return str(exc)
+    except (FileNotFoundError, ValueError) as exc:
+        return f"Error: {exc}" if isinstance(exc, ValueError) else str(exc)
 
     file_size = path.stat().st_size
 
@@ -433,7 +457,8 @@ def get_db_stats(db_path: str) -> str:
         table_stats: list[tuple[str, int]] = []
         total_rows = 0
         for table in tables:
-            cursor.execute(f"SELECT COUNT(*) FROM [{table}]")  # noqa: S608
+            safe_table = table.replace("]", "]]")
+            cursor.execute(f"SELECT COUNT(*) FROM [{safe_table}]")  # noqa: S608
             count = cursor.fetchone()[0]
             table_stats.append((table, count))
             total_rows += count
