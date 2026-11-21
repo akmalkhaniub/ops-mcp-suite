@@ -20,6 +20,7 @@ from typing import Any
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -199,7 +200,7 @@ _MOCK_SEARCH_CODE: list[dict[str, Any]] = [
 # Tools
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_repos(username: str = "", org: str = "") -> str:
     """List GitHub repositories for a user or organisation.
 
@@ -248,7 +249,7 @@ def list_repos(username: str = "", org: str = "") -> str:
         return f"Network error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_repo_info(owner: str, repo: str) -> str:
     """Get detailed metadata for a GitHub repository.
 
@@ -309,7 +310,7 @@ def get_repo_info(owner: str, repo: str) -> str:
         return f"Network error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def list_pull_requests(owner: str, repo: str, state: str = "open") -> str:
     """List pull requests for a repository.
 
@@ -375,7 +376,7 @@ def list_pull_requests(owner: str, repo: str, state: str = "open") -> str:
         return f"Network error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def create_issue(
     owner: str,
     repo: str,
@@ -437,7 +438,7 @@ def create_issue(
         return f"Network error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def search_code(query: str, owner: str = "", repo: str = "") -> str:
     """Search for code across GitHub repositories.
 
@@ -514,7 +515,7 @@ def search_code(query: str, owner: str = "", repo: str = "") -> str:
         return f"Network error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def get_file_contents(
     owner: str,
     repo: str,

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -79,7 +80,7 @@ def _save_json_file(path: Path, data: dict[str, Any]) -> None:
 # ==============================  TOOLS  ====================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def create_langsmith_project(project_name: str, description: str = "") -> str:
     """[SIMULATED] Create a new LangSmith tracing project.
 
@@ -118,7 +119,7 @@ def create_langsmith_project(project_name: str, description: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def run_eval_harness(
     dataset_name: str,
     agent_endpoint: str,
@@ -169,7 +170,7 @@ def run_eval_harness(
     ])
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False))
 def log_agent_trace(
     agent_name: str,
     input_text: str,
@@ -221,7 +222,7 @@ def log_agent_trace(
     return f"Trace logged successfully.\n  Trace ID : {trace_id}\n  File     : {TRACE_FILE.resolve()}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_trace_summary(agent_name: str = "") -> str:
     """Compute summary statistics from ``./agent_traces.jsonl``.
 
@@ -292,7 +293,7 @@ def get_trace_summary(agent_name: str = "") -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False))
 def create_prompt_template(
     template_name: str,
     template_text: str,
@@ -349,7 +350,7 @@ def create_prompt_template(
     ])
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_prompt_versions(template_name: str) -> str:
     """List all stored versions of a prompt template from ``./prompt_registry.json``.
 

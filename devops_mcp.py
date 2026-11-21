@@ -7,6 +7,7 @@ Requires: mcp[cli], boto3, requests
 """
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 import json
@@ -62,7 +63,7 @@ def _save_secrets(data: dict) -> None:
 # Tool 1 — Provision S3 Bucket
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True))
 def provision_s3_bucket(
     bucket_name: str,
     region: str = "us-east-1",
@@ -160,7 +161,7 @@ def provision_s3_bucket(
 # Tool 2 — Generate Bedrock Credentials
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def generate_bedrock_credentials(
     role_arn: str,
     session_duration: int = 3600,
@@ -238,7 +239,7 @@ def generate_bedrock_credentials(
 # Tool 3 — Manage Secrets (local JSON store)
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 def manage_secrets(action: str, key: str, value: str = "") -> str:
     """
     Manages a local JSON-based secret store at ``./devops_secrets.json``.
@@ -315,7 +316,7 @@ def manage_secrets(action: str, key: str, value: str = "") -> str:
 # Tool 4 — Create IAM Policy Document
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True))
 def create_iam_policy(
     service_name: str,
     actions: str,
@@ -380,7 +381,7 @@ def create_iam_policy(
 # Tool 5 — Deploy Docker Container (SIMULATED)
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def deploy_docker_container(
     image_name: str,
     tag: str = "latest",
@@ -435,7 +436,7 @@ def deploy_docker_container(
 # Tool 6 — Check Service Health (REAL)
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True))
 def check_service_health(endpoint_url: str) -> str:
     """
     Makes a real HTTP GET request to the given URL and returns the

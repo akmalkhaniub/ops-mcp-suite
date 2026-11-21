@@ -29,10 +29,20 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
 
+from auth_middleware import (
+    AuthError,
+    build_protected_resource_metadata,
+    build_www_authenticate_header,
+    get_required_scope,
+    resolve_request_principal,
+)
+from secret_scrubber import install_log_scrubber, redact_secrets
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
+install_log_scrubber()
 logger = logging.getLogger("ops-gateway")
 
 # ── Server Registry ──────────────────────────────────────────────────────────
@@ -101,12 +111,16 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Ops-Api-Key", "X-Execution-Mode", "Mcp-Session-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-Ops-Api-Key", "X-Execution-Mode", "X-Ops-Scopes", "Mcp-Session-Id"],
     expose_headers=["WWW-Authenticate", "Mcp-Session-Id"],
 )
 
 
 # ── Health & Discovery ────────────────────────────────────────────────────────
+@app.get("/.well-known/oauth-protected-resource")
+async def oauth_protected_resource(request: Request):
+    """RFC 9728 OAuth 2.0 Protected Resource Metadata endpoint."""
+    return build_protected_resource_metadata(str(request.base_url))
 @app.get("/")
 async def root():
     return {
@@ -132,19 +146,42 @@ async def health():
 # Tools that mutate live infrastructure or secrets require elevated permission when X-Execution-Mode=READ_ONLY
 MUTATING_TOOLS = {
     "provision_s3_bucket",
+    "generate_bedrock_credentials",
     "create_iam_policy",
     "deploy_docker_container",
     "manage_secrets",
     "promote_model",
     "provision_vector_db",
+    "trigger_fine_tuning",
     "store_secret",
     "delete_secret",
     "rotate_secret",
     "rotate_keys",
+    "generate_api_key",
     "create_issue",
+    "provision_database",
     "apply_migrations",
     "clone_database",
+    "create_read_only_user",
+    "create_langsmith_project",
+    "run_eval_harness",
+    "log_agent_trace",
+    "create_prompt_template",
 }
+
+
+def _extract_annotations(tool: object, is_mutating: bool) -> dict:
+    """Extract normalized MCP ToolAnnotations metadata from a FastMCP Tool object."""
+    ann = getattr(tool, "annotations", None)
+    if ann is not None:
+        if hasattr(ann, "model_dump"):
+            return ann.model_dump(exclude_none=True)
+        if isinstance(ann, dict):
+            return dict(ann)
+    return {
+        "readOnlyHint": not is_mutating,
+        "destructiveHint": is_mutating,
+    }
 
 
 def _extract_mcp_tools(mcp_instance) -> dict:
@@ -189,10 +226,19 @@ async def list_servers():
 # REST API that proxies to each MCP server module directly (in-process).
 
 @app.get("/{server_id}/tools")
-async def list_tools(server_id: str):
-    """List all tools available on a specific MCP server."""
+async def list_tools(server_id: str, request: Request):
+    """List tools available on a specific MCP server, filtered by caller OAuth scopes when present."""
     if server_id not in MCP_SERVERS:
         return JSONResponse(status_code=404, content={"error": f"Server '{server_id}' not found"})
+
+    try:
+        principal = resolve_request_principal(request, require_auth_override=False)
+    except AuthError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers={"WWW-Authenticate": build_www_authenticate_header(request, error=exc.error)},
+            content={"error": redact_secrets(exc.description)},
+        )
 
     info = MCP_SERVERS[server_id]
     try:
@@ -202,40 +248,58 @@ async def list_tools(server_id: str):
         if registered:
             tools = []
             for name, tool in registered.items():
+                is_mutating = name in MUTATING_TOOLS
+                req_scope = get_required_scope(name, is_mutating=is_mutating)
+                if not principal.has_scope(req_scope):
+                    continue
                 tools.append({
                     "name": name,
                     "description": getattr(tool, "description", str(getattr(tool, "fn", None).__doc__ or "")),
-                    "execution_tier": "LIVE_MUTATION" if name in MUTATING_TOOLS else "READ_ONLY",
+                    "execution_tier": "LIVE_MUTATION" if is_mutating else "READ_ONLY",
+                    "required_scope": req_scope,
+                    "annotations": _extract_annotations(tool, is_mutating=is_mutating),
                 })
             return {"server": info["name"], "tools": tools}
     except Exception as e:
         logger.error("Error listing tools for %s: %s", server_id, e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": redact_secrets(str(e))})
 
     return {"server": info["name"], "tools": []}
 
 
 @app.post("/{server_id}/call/{tool_name}")
 async def call_tool(server_id: str, tool_name: str, request: Request):
-    """Call a specific tool on a specific MCP server with JSON arguments and execution-mode policy gating."""
+    """Call a specific tool on a specific MCP server with OAuth/API-key, scope, and READ_ONLY policy gating."""
     if server_id not in MCP_SERVERS:
         return JSONResponse(status_code=404, content={"error": f"Server '{server_id}' not found"})
 
-    # Enforce optional API key & READ_ONLY execution harness guard
-    configured_key = os.environ.get("OPS_GATEWAY_API_KEY")
-    if configured_key:
-        auth_header = request.headers.get("Authorization", "")
-        bearer_val = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
-        provided_key = request.headers.get("X-Ops-Api-Key") or bearer_val
-        if not provided_key or not secrets.compare_digest(provided_key, configured_key):
-            return JSONResponse(
-                status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="ops-mcp-gateway"'},
-                content={"error": "Unauthorized: invalid or missing X-Ops-Api-Key"},
-            )
+    try:
+        principal = resolve_request_principal(request)
+    except AuthError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            headers={"WWW-Authenticate": build_www_authenticate_header(request, error=exc.error)},
+            content={"error": redact_secrets(exc.description)},
+        )
+
+    is_mutating = tool_name in MUTATING_TOOLS
+    req_scope = get_required_scope(tool_name, is_mutating=is_mutating)
+    if not principal.has_scope(req_scope):
+        return JSONResponse(
+            status_code=403,
+            headers={
+                "WWW-Authenticate": build_www_authenticate_header(
+                    request, error="insufficient_scope", required_scope=req_scope
+                )
+            },
+            content={
+                "error": f"Insufficient scope: '{tool_name}' requires scope '{req_scope}'",
+                "required_scope": req_scope,
+            },
+        )
 
     exec_mode = request.headers.get("X-Execution-Mode", "FULL").upper()
-    if exec_mode == "READ_ONLY" and tool_name in MUTATING_TOOLS:
+    if exec_mode == "READ_ONLY" and is_mutating:
         return JSONResponse(
             status_code=403,
             content={
@@ -268,10 +332,10 @@ async def call_tool(server_id: str, tool_name: str, request: Request):
             return {"server": server_id, "tool": tool_name, "result": result}
     except TypeError as e:
         logger.warning("Invalid arguments for %s/%s: %s", server_id, tool_name, e)
-        return JSONResponse(status_code=422, content={"error": f"Invalid tool arguments: {e}"})
+        return JSONResponse(status_code=422, content={"error": redact_secrets(f"Invalid tool arguments: {e}")})
     except Exception as e:
         logger.error("Error calling %s/%s: %s", server_id, tool_name, e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse(status_code=500, content={"error": redact_secrets(str(e))})
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ import uuid
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -112,7 +113,7 @@ def _is_read_only_query(query: str) -> bool:
 # ==============================  TOOLS  ====================================
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False))
 def provision_database(db_name: str, engine: str = "sqlite") -> str:
     """Provision a new database.
 
@@ -181,7 +182,7 @@ def provision_database(db_name: str, engine: str = "sqlite") -> str:
     ])
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 def apply_migrations(db_url: str, dry_run: bool = False) -> str:
     """[SIMULATED] Run Alembic-style database migrations.
 
@@ -223,7 +224,7 @@ def apply_migrations(db_url: str, dry_run: bool = False) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def run_query(db_path: str, query: str) -> str:
     """Execute a **read-only** SQL query against a SQLite database.
 
@@ -286,7 +287,7 @@ def run_query(db_path: str, query: str) -> str:
     return f"Query returned {len(rows)} row(s):\n\n{result}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_tables(db_path: str) -> str:
     """List all tables and their columns (with types) in a SQLite database.
 
@@ -343,7 +344,7 @@ def list_tables(db_path: str) -> str:
         return f"Error: could not list tables — {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 def clone_database(source_db: str, target_name: str) -> str:
     """Clone a SQLite database by copying the file.
 
@@ -386,7 +387,7 @@ def clone_database(source_db: str, target_name: str) -> str:
     ])
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def create_read_only_user(db_name: str, username: str) -> str:
     """[SIMULATED] Generate SQL commands to create a read-only Postgres user.
 
@@ -424,7 +425,7 @@ def create_read_only_user(db_name: str, username: str) -> str:
     return f"[SIMULATED] SQL commands for read-only user '{username}':\n\n{sql}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_db_stats(db_path: str) -> str:
     """Gather statistics for a SQLite database.
 

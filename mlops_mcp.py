@@ -7,6 +7,7 @@ Requires: mcp[cli]
 """
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 import json
 import logging
 import uuid
@@ -134,7 +135,7 @@ _MODEL_METRICS: dict[str, dict] = {
 # Tool 1 — Provision Vector DB
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True))
 def provision_vector_db(
     index_name: str,
     dimension: int = 1536,
@@ -190,7 +191,7 @@ def provision_vector_db(
 # Tool 2 — Trigger Fine-Tuning
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True))
 def trigger_fine_tuning(
     dataset_uri: str,
     base_model: str = "gpt-4o-mini",
@@ -248,7 +249,7 @@ def trigger_fine_tuning(
 # Tool 3 — List Model Registry
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_model_registry() -> str:
     """
     Returns the current model registry showing all registered models
@@ -285,7 +286,7 @@ def list_model_registry() -> str:
 # Tool 4 — Promote Model
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
 def promote_model(
     model_name: str,
     from_stage: str = "staging",
@@ -353,7 +354,7 @@ def promote_model(
 # Tool 5 — Fetch Model Metrics
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def fetch_model_metrics(model_name: str) -> str:
     """
     Returns realistic mock performance metrics for a registered model
@@ -394,7 +395,7 @@ def fetch_model_metrics(model_name: str) -> str:
 # Tool 6 — Compare Models
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def compare_models(model_a: str, model_b: str) -> str:
     """
     Returns a side-by-side comparison of two models' key performance

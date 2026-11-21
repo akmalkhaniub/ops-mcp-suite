@@ -29,6 +29,8 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from secret_scrubber import install_log_scrubber
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -38,6 +40,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
 )
 logger = logging.getLogger("secrets_mcp")
+install_log_scrubber(logger)
 
 # ---------------------------------------------------------------------------
 # Server
@@ -229,7 +232,7 @@ def _ensure_vault() -> SecureVault:
 # Tools
 # ===================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
 def store_secret(key: str, value: str, description: str = "") -> str:
     """Encrypt and store a secret in the local vault.
 
@@ -259,7 +262,7 @@ def store_secret(key: str, value: str, description: str = "") -> str:
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def get_secret(key: str) -> str:
     """Decrypt and retrieve a secret value from the vault.
 
@@ -284,7 +287,7 @@ def get_secret(key: str) -> str:
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False))
 def list_secrets() -> str:
     """List all secrets stored in the vault with masked values.
 
@@ -317,7 +320,7 @@ def list_secrets() -> str:
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False))
 def delete_secret(key: str) -> str:
     """Remove a secret from the vault permanently.
 
@@ -342,7 +345,7 @@ def delete_secret(key: str) -> str:
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
 def rotate_secret(key: str) -> str:
     """Rotate a secret by generating a new random value.
 
@@ -375,7 +378,7 @@ def rotate_secret(key: str) -> str:
         return f"Error: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=False))
 def generate_api_key(prefix: str = "sk", length: int = 48) -> str:
     """Generate a cryptographically secure API key.
 
