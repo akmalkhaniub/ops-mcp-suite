@@ -152,3 +152,43 @@ def test_secret_scrubber_redacts_credentials_and_logs(monkeypatch):
     )
     SecretRedactingFilter().filter(record)
     assert fernet_key not in record.getMessage()
+
+    # Raw JWT and nested dict log args are also redacted cleanly
+    sample_jwt = create_hs256_jwt({"sub": "alice", "scope": "ops.read"}, "secret-key-123456")
+    assert sample_jwt not in redact_secrets(f"leaked token={sample_jwt}")
+    nested_rec = logging.LogRecord(
+        name="secrets_mcp",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=2,
+        msg="Nested payload %s",
+        args=({"token": sample_jwt},),
+        exc_info=None,
+    )
+    SecretRedactingFilter().filter(nested_rec)
+    assert sample_jwt not in nested_rec.getMessage()
+
+
+def test_malformed_jwt_claims_return_401_instead_of_500(monkeypatch):
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    secret = "unit-test-hs256-secret-key-2026"
+    monkeypatch.setenv("OPS_JWT_HS256_SECRET", secret)
+    client = TestClient(app)
+
+    bad_exp_jwt = create_hs256_jwt({"sub": "agent-1", "exp": "not-a-number"}, secret)
+    resp = client.get("/dbops/tools", headers={"Authorization": f"Bearer {bad_exp_jwt}"})
+    assert resp.status_code == 401
+
+    # Valid HS256 signature over non-object JSON payload (`[]`) must return 401, not 500
+    hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode("ascii")
+    pld = base64.urlsafe_b64encode(json.dumps([]).encode()).rstrip(b"=").decode("ascii")
+    sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode(), f"{hdr}.{pld}".encode(), hashlib.sha256).digest()
+    ).rstrip(b"=").decode("ascii")
+    non_dict_jwt = f"{hdr}.{pld}.{sig}"
+    resp2 = client.get("/dbops/tools", headers={"Authorization": f"Bearer {non_dict_jwt}"})
+    assert resp2.status_code == 401

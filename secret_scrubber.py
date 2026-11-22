@@ -18,6 +18,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"), "[REDACTED:GITHUB_TOKEN]"),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[REDACTED:AWS_ACCESS_KEY]"),
     (re.compile(r"\b(?:sk|ls_api)_[A-Za-z0-9_-]{16,}\b"), "[REDACTED:API_KEY]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"), "[REDACTED:JWT]"),
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]{12,}"), r"\1[REDACTED:BEARER]"),
     (
         re.compile(
@@ -88,16 +89,9 @@ class SecretRedactingFilter(logging.Filter):
         if isinstance(record.msg, str):
             record.msg = redact_secrets(record.msg)
         if record.args:
-            if isinstance(record.args, tuple):
-                record.args = tuple(
-                    redact_secrets(a) if isinstance(a, str) else a
-                    for a in record.args
-                )
-            elif isinstance(record.args, dict):
-                record.args = {
-                    k: redact_secrets(v) if isinstance(v, str) else v
-                    for k, v in record.args.items()
-                }
+            record.args = redact_payload(record.args)
+        if isinstance(record.exc_text, str):
+            record.exc_text = redact_secrets(record.exc_text)
         return True
 
 

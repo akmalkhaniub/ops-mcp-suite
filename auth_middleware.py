@@ -154,6 +154,9 @@ def verify_bearer_jwt(
     except Exception as exc:
         raise AuthError(401, "invalid_token", f"Unable to decode JWT: {exc}") from exc
 
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise AuthError(401, "invalid_token", "JWT header and claims must be JSON objects")
+
     if header.get("alg") != "HS256":
         raise AuthError(401, "invalid_token", "Unsupported JWT algorithm; expected HS256")
 
@@ -164,12 +167,22 @@ def verify_bearer_jwt(
 
     now = time.time()
     exp = claims.get("exp")
-    if exp is not None and float(exp) < now:
-        raise AuthError(401, "invalid_token", "Bearer token has expired")
+    if exp is not None:
+        try:
+            exp_ts = float(exp)
+        except (TypeError, ValueError) as exc:
+            raise AuthError(401, "invalid_token", "Malformed JWT 'exp' claim") from exc
+        if exp_ts < now:
+            raise AuthError(401, "invalid_token", "Bearer token has expired")
 
     nbf = claims.get("nbf")
-    if nbf is not None and float(nbf) > now:
-        raise AuthError(401, "invalid_token", "Bearer token is not yet valid")
+    if nbf is not None:
+        try:
+            nbf_ts = float(nbf)
+        except (TypeError, ValueError) as exc:
+            raise AuthError(401, "invalid_token", "Malformed JWT 'nbf' claim") from exc
+        if nbf_ts > now:
+            raise AuthError(401, "invalid_token", "Bearer token is not yet valid")
 
     if expected_issuer and claims.get("iss") != expected_issuer:
         raise AuthError(401, "invalid_token", "Bearer token issuer mismatch")
