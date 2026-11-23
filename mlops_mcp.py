@@ -8,6 +8,7 @@ Requires: mcp[cli]
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 import json
 import logging
 import uuid
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("MLOps Tools")
+configure_mcp_capabilities(mcp)
 
 # ---------------------------------------------------------------------------
 # Realistic mock data

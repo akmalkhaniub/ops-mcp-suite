@@ -21,6 +21,7 @@ from typing import Any
 import requests
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -35,6 +36,7 @@ logger = logging.getLogger("github_mcp")
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("GitHub MCP Server")
+configure_mcp_capabilities(mcp)
 
 # ---------------------------------------------------------------------------
 # Constants / Configuration

@@ -36,6 +36,8 @@ from auth_middleware import (
     get_required_scope,
     resolve_request_principal,
 )
+from mcp_capabilities import build_initialize_result
+from rate_limiter import TokenBucketRateLimiter, default_rate_limit_rpm
 from secret_scrubber import install_log_scrubber, redact_secrets
 
 logging.basicConfig(
@@ -112,8 +114,41 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Ops-Api-Key", "X-Execution-Mode", "X-Ops-Scopes", "Mcp-Session-Id"],
-    expose_headers=["WWW-Authenticate", "Mcp-Session-Id"],
+    expose_headers=["WWW-Authenticate", "Mcp-Session-Id", "Retry-After", "X-RateLimit-Limit", "X-RateLimit-Remaining"],
 )
+
+rate_limiter = TokenBucketRateLimiter(requests_per_minute=default_rate_limit_rpm())
+app.state.rate_limiter = rate_limiter
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Enforce per-API-key / per-IP token bucket rate limiting across gateway routes."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    limiter: TokenBucketRateLimiter = getattr(app.state, "rate_limiter", rate_limiter)
+    client_key = limiter.resolve_client_key(request)
+    decision = limiter.consume(client_key)
+    if not decision.allowed:
+        return JSONResponse(
+            status_code=429,
+            headers={
+                "Retry-After": str(decision.retry_after_seconds),
+                "X-RateLimit-Limit": str(decision.limit),
+                "X-RateLimit-Remaining": "0",
+            },
+            content={
+                "error": "Rate limit exceeded. Maximum 120 requests per minute allowed.",
+                "code": "RATE_LIMIT_EXCEEDED",
+                "retry_after_seconds": decision.retry_after_seconds,
+            },
+        )
+
+    response = await call_next(request)
+    response.headers["X-RateLimit-Limit"] = str(decision.limit)
+    response.headers["X-RateLimit-Remaining"] = str(decision.remaining)
+    return response
 
 
 # ── Health & Discovery ────────────────────────────────────────────────────────
@@ -336,6 +371,108 @@ async def call_tool(server_id: str, tool_name: str, request: Request):
     except Exception as e:
         logger.error("Error calling %s/%s: %s", server_id, tool_name, e)
         return JSONResponse(status_code=500, content={"error": redact_secrets(str(e))})
+
+
+def _jsonrpc_error(req_id, code: int, message: str, status_code: int = 200) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}},
+    )
+
+
+@app.post("/{server_id}/mcp")
+async def mcp_jsonrpc(server_id: str, request: Request):
+    """MCP 2025/2026 JSON-RPC 2.0 endpoint supporting capability negotiation and tool dispatch."""
+    if server_id not in MCP_SERVERS:
+        return _jsonrpc_error(None, -32004, f"Server '{server_id}' not found", status_code=404)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return _jsonrpc_error(None, -32700, "Parse error: invalid JSON", status_code=400)
+
+    if not isinstance(payload, dict):
+        return _jsonrpc_error(None, -32600, "Invalid Request: expected JSON object", status_code=400)
+
+    req_id = payload.get("id")
+    method = payload.get("method")
+    params = payload.get("params") or {}
+    if not isinstance(method, str) or not isinstance(params, dict):
+        return _jsonrpc_error(req_id, -32600, "Invalid Request", status_code=400)
+
+    info = MCP_SERVERS[server_id]
+    mod = __import__(info["module"])
+    mcp_instance = getattr(mod, "mcp", None)
+
+    if method == "initialize":
+        req_version = params.get("protocolVersion")
+        result = build_initialize_result(mcp_instance, requested_protocol_version=req_version)
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
+
+    if method == "notifications/initialized":
+        return JSONResponse(status_code=202, content={"jsonrpc": "2.0", "status": "accepted"})
+
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    if method == "tools/list":
+        try:
+            principal = resolve_request_principal(request, require_auth_override=False)
+        except AuthError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                headers={"WWW-Authenticate": build_www_authenticate_header(request, error=exc.error)},
+                content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32001, "message": redact_secrets(exc.description)}},
+            )
+        registered = _extract_mcp_tools(mcp_instance)
+        tools = []
+        for name, tool in registered.items():
+            is_mutating = name in MUTATING_TOOLS
+            req_scope = get_required_scope(name, is_mutating=is_mutating)
+            if not principal.has_scope(req_scope):
+                continue
+            tools.append({
+                "name": name,
+                "description": getattr(tool, "description", ""),
+                "annotations": _extract_annotations(tool, is_mutating=is_mutating),
+            })
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}
+
+    if method == "tools/call":
+        tool_name = params.get("name")
+        arguments = params.get("arguments") or {}
+        if not isinstance(tool_name, str) or not isinstance(arguments, dict):
+            return _jsonrpc_error(req_id, -32602, "Invalid params: 'name' and 'arguments' required", status_code=400)
+        try:
+            principal = resolve_request_principal(request)
+        except AuthError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                headers={"WWW-Authenticate": build_www_authenticate_header(request, error=exc.error)},
+                content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32001, "message": redact_secrets(exc.description)}},
+            )
+        is_mutating = tool_name in MUTATING_TOOLS
+        req_scope = get_required_scope(tool_name, is_mutating=is_mutating)
+        if not principal.has_scope(req_scope):
+            return JSONResponse(
+                status_code=403,
+                headers={"WWW-Authenticate": build_www_authenticate_header(request, error="insufficient_scope", required_scope=req_scope)},
+                content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32003, "message": f"Insufficient scope '{req_scope}'"}},
+            )
+        exec_mode = request.headers.get("X-Execution-Mode", "FULL").upper()
+        if exec_mode == "READ_ONLY" and is_mutating:
+            return _jsonrpc_error(req_id, -32003, f"PolicyGate violation: '{tool_name}' blocked under READ_ONLY", status_code=403)
+        registered = _extract_mcp_tools(mcp_instance)
+        tool = registered.get(tool_name)
+        if not tool:
+            return _jsonrpc_error(req_id, -32601, f"Tool '{tool_name}' not found", status_code=404)
+        try:
+            res = await tool.fn(**arguments) if inspect.iscoroutinefunction(tool.fn) else tool.fn(**arguments)
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": str(res)}], "isError": False}}
+        except TypeError as exc:
+            return _jsonrpc_error(req_id, -32602, redact_secrets(f"Invalid tool arguments: {exc}"), status_code=422)
+
+    return _jsonrpc_error(req_id, -32601, f"Method '{method}' not found", status_code=404)
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ Requires: mcp[cli], boto3, requests
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 import json
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("DevOps Tools")
+configure_mcp_capabilities(mcp)
 
 # ---------------------------------------------------------------------------
 # Constants

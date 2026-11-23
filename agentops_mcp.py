@@ -26,6 +26,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -46,6 +47,7 @@ PROMPT_REGISTRY_FILE = Path("./prompt_registry.json")
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("AgentOps Tools")
+configure_mcp_capabilities(mcp)
 
 
 # ===========================  HELPER FUNCTIONS  ============================

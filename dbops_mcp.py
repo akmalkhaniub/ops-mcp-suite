@@ -26,6 +26,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -40,6 +41,7 @@ logger = logging.getLogger("dbops_mcp")
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("DBOps Tools")
+configure_mcp_capabilities(mcp)
 
 
 # ===========================  HELPER FUNCTIONS  ============================

@@ -1,7 +1,7 @@
 [
   {
     "id": "OPS-001",
-    "status": "TODO",
+    "status": "DONE",
     "priority": 1,
     "title": "Add In-Memory Rate Limiting to FastAPI Gateway",
     "description": "Implement an IP and API-key aware token bucket rate limiter middleware in gateway.py. Return HTTP 429 when an agent exceeds 120 requests/minute. Add unit tests in tests/test_rate_limiting.py verifying the 429 status code and Retry-After header.",
@@ -13,7 +13,7 @@
   },
   {
     "id": "OPS-002",
-    "status": "TODO",
+    "status": "DONE",
     "priority": 2,
     "title": "Implement MCP JSON-RPC Capability Negotiation in Servers",
     "description": "Ensure each of the 6 MCP servers correctly reports server capabilities ('prompts', 'resources', 'tools', 'logging') upon initialize handshake adhering to MCP 2025/2026 specs.",
@@ -24,7 +24,7 @@
   },
   {
     "id": "OPS-003",
-    "status": "TODO",
+    "status": "DONE",
     "priority": 3,
     "title": "Add Secret Expiration and Rotation Tool in secrets_mcp.py",
     "description": "Add a new tool `rotate_secret(key_name, new_value, ttl_days=30)` that re-encrypts values with a fresh timestamp and marks old keys with an expiration header.",

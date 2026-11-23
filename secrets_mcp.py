@@ -23,13 +23,14 @@ import logging
 import os
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from mcp_capabilities import configure_mcp_capabilities
 from secret_scrubber import install_log_scrubber
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ install_log_scrubber(logger)
 # Server
 # ---------------------------------------------------------------------------
 mcp = FastMCP("Secrets Manager MCP Server")
+configure_mcp_capabilities(mcp)
 
 # ---------------------------------------------------------------------------
 # Paths & Configuration
@@ -163,12 +165,36 @@ class SecureVault:
         return f"Secret '{key}' {action} successfully."
 
     def get(self, key: str) -> str:
-        """Retrieve a decrypted secret value."""
+        """Retrieve a decrypted secret value, rejecting expired secrets."""
         vault = self._load_vault()
         entry = vault.get(key)
         if entry is None:
             raise KeyError(f"Secret '{key}' not found in the vault.")
+        expires_at = entry.get("expires_at")
+        if expires_at:
+            exp_dt = datetime.fromisoformat(expires_at)
+            if datetime.now(tz=timezone.utc) >= exp_dt:
+                raise PermissionError(f"Secret '{key}' expired at {expires_at}.")
         return entry["value"]
+
+    def get_metadata(self, key: str) -> dict[str, Any]:
+        """Return non-secret lifecycle and expiration metadata for ``key``."""
+        vault = self._load_vault()
+        entry = vault.get(key)
+        if entry is None:
+            raise KeyError(f"Secret '{key}' not found in the vault.")
+        return {
+            "key": key,
+            "description": entry.get("description", ""),
+            "created_at": entry.get("created_at", ""),
+            "updated_at": entry.get("updated_at", ""),
+            "rotated_at": entry.get("rotated_at"),
+            "expires_at": entry.get("expires_at"),
+            "ttl_days": entry.get("ttl_days"),
+            "has_previous": entry.get("_previous") is not None,
+            "previous_expires_at": entry.get("_previous_expires_at"),
+            "previous_status": entry.get("_previous_status"),
+        }
 
     def list_all(self) -> list[dict[str, str]]:
         """Return a list of secret metadata with masked values."""
@@ -183,6 +209,7 @@ class SecureVault:
                 "description": v.get("description", ""),
                 "created_at": v.get("created_at", ""),
                 "updated_at": v.get("updated_at", ""),
+                "expires_at": v.get("expires_at", ""),
             })
         return result
 
@@ -195,19 +222,35 @@ class SecureVault:
         self._save_vault(vault)
         return f"Secret '{key}' deleted successfully."
 
-    def rotate(self, key: str) -> str:
-        """Rotate a secret: generate a new random 32-char hex value,
-        preserve the old value in ``_previous``."""
+    def rotate(self, key: str, new_value: str | None = None, ttl_days: int = 30) -> dict[str, Any]:
+        """Rotate a secret with fresh timestamps, TTL expiration, and previous-key expiration metadata."""
+        if ttl_days <= 0:
+            raise ValueError("'ttl_days' must be a positive integer.")
         vault = self._load_vault()
         if key not in vault:
             raise KeyError(f"Secret '{key}' not found in the vault.")
+        now = datetime.now(tz=timezone.utc)
+        now_iso = now.isoformat()
+        expires_at = (now + timedelta(days=ttl_days)).isoformat()
         old_value = vault[key]["value"]
-        new_value = secrets.token_hex(16)  # 32 hex characters
+        resolved_new_value = new_value if (new_value is not None and new_value != "") else secrets.token_hex(16)
         vault[key]["_previous"] = old_value
-        vault[key]["value"] = new_value
-        vault[key]["updated_at"] = self._now_iso()
+        vault[key]["_previous_expires_at"] = now_iso
+        vault[key]["_previous_status"] = f"EXPIRED; expired_at={now_iso}"
+        vault[key]["value"] = resolved_new_value
+        vault[key]["updated_at"] = now_iso
+        vault[key]["rotated_at"] = now_iso
+        vault[key]["ttl_days"] = ttl_days
+        vault[key]["expires_at"] = expires_at
         self._save_vault(vault)
-        return new_value
+        return {
+            "key": key,
+            "new_value": resolved_new_value,
+            "rotated_at": now_iso,
+            "expires_at": expires_at,
+            "previous_expires_at": now_iso,
+            "ttl_days": ttl_days,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -346,34 +389,36 @@ def delete_secret(key: str) -> str:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
-def rotate_secret(key: str) -> str:
-    """Rotate a secret by generating a new random value.
+def rotate_secret(key_name: str, new_value: str | None = None, ttl_days: int = 30) -> str:
+    """Rotate a secret by re-encrypting a new value with TTL expiration metadata.
 
-    A new 32-character hexadecimal value is generated and stored.  The
-    previous value is preserved in a ``_previous`` field inside the vault
-    so it can be referenced if needed during migration.
+    Re-encrypts ``new_value`` (or generates a 32-character hex token if omitted)
+    with fresh ``rotated_at`` and ``expires_at`` timestamps, while marking the
+    previous secret value as expired with an explicit ``_previous_expires_at``
+    header inside the encrypted vault.
 
     Args:
-        key: The identifier of the secret to rotate.
+        key_name: The identifier of the secret to rotate.
+        new_value: Optional replacement secret value (auto-generated if omitted).
+        ttl_days: Days until the rotated secret expires (default: 30).
 
     Returns:
-        The newly generated secret value, or an error message.
+        Summary of rotation including expiration metadata, or an error message.
     """
-    if not key.strip():
-        return "Error: 'key' cannot be empty."
+    if not key_name.strip():
+        return "Error: 'key_name' cannot be empty."
 
     try:
         vault = _ensure_vault()
-        new_value = vault.rotate(key.strip())
-        logger.info("rotate_secret: key=%s (rotated)", key)
+        meta = vault.rotate(key_name.strip(), new_value=new_value, ttl_days=ttl_days)
+        logger.info("rotate_secret: key=%s ttl_days=%d (rotated)", key_name, ttl_days)
         return (
-            f"Secret '{key}' rotated successfully.\n"
-            f"  New value: {new_value}\n"
-            f"  (Previous value preserved in vault)"
+            f"Secret '{key_name}' rotated successfully.\n"
+            f"  Rotated at         : {meta['rotated_at']}\n"
+            f"  Expires at         : {meta['expires_at']} (ttl_days={meta['ttl_days']})\n"
+            f"  Previous key header: EXPIRED; expired_at={meta['previous_expires_at']}"
         )
-    except KeyError as exc:
-        return f"Error: {exc}"
-    except (PermissionError, ValueError, RuntimeError) as exc:
+    except (KeyError, PermissionError, ValueError, RuntimeError) as exc:
         logger.error("rotate_secret error: %s", exc)
         return f"Error: {exc}"
 
